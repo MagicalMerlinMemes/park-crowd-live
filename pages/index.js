@@ -1,17 +1,12 @@
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 
+import { COLORS, NO_WAIT } from "../components/colors";
+
 const ParkMap = dynamic(() => import("../components/ParkMap"), { ssr: false });
 
 const POLL_MS = 3 * 60 * 1000; // 3 minutes - no reason to poll faster than the API refreshes
 
-const COLORS = {
-  "Quieter than usual": "#2ecc71",
-  "Normal": "#f1c40f",
-  "Busier than usual": "#e67e22",
-  "Very busy for this ride": "#e74c3c",
-  "Park closed": "#bbb",
-};
 
 function formatTime(iso) {
   if (!iso) return "-";
@@ -114,7 +109,7 @@ export default function Home() {
             <th style={{ padding: 8 }}>Ride</th>
             <th style={{ padding: 8 }}>Land</th>
             <th style={{ padding: 8 }}>Wait</th>
-            <th style={{ padding: 8 }}>Typical</th>
+            <th style={{ padding: 8 }}>Usual range</th>
             <th style={{ padding: 8 }}>Status</th>
           </tr>
         </thead>
@@ -125,9 +120,9 @@ export default function Home() {
               <tr key={r.id} style={{ borderBottom: "1px solid #eee" }}>
                 <td style={{ padding: 8 }}>{r.name}</td>
                 <td style={{ padding: 8 }}>{r.land}</td>
-                <td style={{ padding: 8 }}>{r.busyLabel === "Park closed" ? "-" : `${r.waitMinutes} min`}</td>
+                <td style={{ padding: 8 }}>{NO_WAIT.has(r.busyLabel) || r.waitMinutes == null ? "-" : `${r.waitMinutes} min`}</td>
                 <td style={{ padding: 8 }}>
-                  {r.busyLabel === "Park closed" ? "-" : `${r.typicalP50}–${r.typicalP90} min`}
+                  {r.typicalLow == null || NO_WAIT.has(r.busyLabel) ? "-" : `${r.typicalLow}–${r.typicalHigh} min`}
                 </td>
                 <td style={{ padding: 8 }}>
                   <span style={{ color: COLORS[r.busyLabel] }}>{r.busyLabel}</span>
@@ -136,6 +131,13 @@ export default function Home() {
             ))}
         </tbody>
       </table>
+
+      <p style={{ fontSize: 12, color: "#777", marginTop: 16 }}>
+        Usual range is the middle half of posted waits (25th to 75th percentile) for
+        that ride at this hour and day type, from our own readings since July 24, 2024.
+        Each ride is judged against its own history, so a 20-minute wait can be busy for
+        one ride and quiet for another.
+      </p>
     </div>
   );
 }

@@ -1,64 +1,74 @@
 # Disneyland Resort: Live Crowd Flow
 
-A live crowd map for Disneyland Park and Disney California Adventure,
-built on the free ThemeParks.wiki API. Scores every ride's current wait
-against that ride's own historical typical range, not a fixed minute
-threshold, so "busy" means something different for a ride that's
-normally empty vs. one that's normally packed.
+A live crowd map for Disneyland Park and Disney California Adventure. Each
+ride's current wait is judged against that ride's own history, for the same
+hour and day type, so "busy" means something different for a ride that is
+normally empty than for one that is normally packed.
 
 ## How it works
 
-- `scripts/build-baseline.mjs` - a one-time (or periodic) job that pulls
-  each ride's daily wait statistics for the past 7–30 days from
-  `/v1/entity/{id}/history/daily` and writes `data/baseline.json`: each
-  ride's typical min / p50 / p90 / max wait.
-- `pages/api/live.js` - a serverless function that pulls CURRENT wait
-  times from `/v1/entity/{id}/live`, compares each to that ride's
-  baseline, and returns a 0–100 "relative percentile" plus a plain-
-  language label (Quieter than usual / Normal / Busier than usual /
-  Very busy for this ride).
-- `pages/index.js` - the page people actually see: a live-updating map
-  (polls the API route every 3 minutes) and a sortable table.
+Three data sources, each doing one job:
 
-## Local setup
+- **ThemeParks.wiki API** supplies live waits, ride status, and park hours.
+- **Your Supabase table `wait_time_readings`** (filled by the Railway
+  collector) supplies history. The view `ride_baselines` turns it into each
+  ride's usual wait distribution by weekday/weekend and clock hour.
+- **`data/rides.json`** holds ride names, lands, and map coordinates. Built
+  from the API with 3 calls.
 
-```bash
+Files:
+
+- `sql/ride_baselines.sql` builds the `ride_baselines` view. Run once in the
+  Supabase SQL editor, then refresh weekly.
+- `lib/baseline.js` reads that view and scores a live wait 0-100 against the
+  ride's own distribution. It uses the most specific bucket with 30+
+  readings: weekday/weekend at this hour, then any day at this hour, then
+  all hours.
+- `pages/api/live.js` is the serverless function the page calls. It also
+  flatlines a park one hour after closing.
+- `pages/index.js` and `components/ParkMap.js` draw the map and table.
+
+Only attractions with status OPERATING and a posted standby wait, from
+2024-07-24 forward (Lightning Lane Multi Pass era), count toward baselines.
+
+## Setup
+
+1. In Supabase, run `sql/ride_baselines.sql` in the SQL editor.
+2. Create `.env.local` in this folder:
+
+```
+SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+SUPABASE_ANON_KEY=your-anon-public-key
+```
+
+Use the anon (public) key, not the service_role key. The view holds only
+aggregated public wait times, so the anon key is enough, and no powerful key
+ever lives in this project.
+
+3. Build the ride list and run locally:
+
+```
 npm install
-npm run build-baseline   # writes data/baseline.json from live API history
-npm run dev               # http://localhost:3000
+npm run build-rides
+npm run dev
 ```
 
-Anonymous API calls get a 7-day history window, which is enough to
-start. For a sturdier 30-day baseline, get a free key at
-https://api.themeparks.wiki and run:
+4. Deploy: add the same two variables in Vercel under Settings, Environment
+   Variables, then push to GitHub. Vercel redeploys on every push.
 
-```bash
-THEMEPARKS_API_KEY=your_key_here npm run build-baseline
-```
+## Keeping it fresh
 
-Re-run `build-baseline` periodically (weekly is plenty - wait patterns
-don't shift day to day) to keep the baseline current. A GitHub Action
-on a cron schedule that runs the script and commits the updated
-`data/baseline.json` is the easiest way to automate this.
+- Baselines: `refresh materialized view concurrently public.ride_baselines;`
+  weekly in the SQL editor, or schedule it with the optional pg_cron block at
+  the bottom of the SQL file.
+- Rides: re-run `npm run build-rides` and push when the park adds or renames
+  a ride.
+- Lands: `data/land-anchors.json` maps ride-name keywords to lands. Any ride
+  without a keyword takes the land of its nearest matched ride. Add a keyword
+  when a ride lands in the wrong land, then re-run `build-rides`.
 
-## Deploying to Vercel
+## Troubleshooting
 
-1. Push this folder to a GitHub repo.
-2. Go to vercel.com → **Add New Project** → import that repo.
-3. Vercel detects Next.js automatically. No config needed. Click Deploy.
-4. You get a live URL like `park-crowd-live.vercel.app` immediately,
-   and can attach a custom domain later from the project settings.
-
-Every push to the repo's main branch redeploys automatically.
-
-## Extending it
-
-- Lands come from `data/land-anchors.json` (keyword -> land) plus
-  nearest-anchor assignment by coordinates, so renamed or new rides
-  still land in the right area. Add keywords for any ride that lands
-  in the wrong land. Re-run `build-baseline` after editing.
-- The map uses Leaflet with Esri satellite and CARTO street tiles.
-  Check provider terms before a public launch and consider a keyed
-  provider (MapTiler, Mapbox) if traffic grows.
-- Add a second destination (Walt Disney World, Universal, etc.) by
-  changing `DESTINATION_NAME` and re-running `build-baseline`.
+Open `/api/live` in the browser. `statsError` should be `null`. If it shows a
+message, a Supabase variable is missing or wrong. `missingFromFeed` lists
+rides in `rides.json` that the live API did not return.

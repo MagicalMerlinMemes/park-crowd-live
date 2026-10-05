@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "build-baseline": "node scripts/build-baseline.mjs"
+    "build-rides": "node scripts/build-rides.mjs"
   },
   "dependencies": {
     "next": "14.2.5",

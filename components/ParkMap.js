@@ -1,12 +1,6 @@
 import { useEffect, useRef } from "react";
+import { COLORS, NO_WAIT } from "./colors";
 
-const COLORS = {
-  "Quieter than usual": "#2ecc71",
-  "Normal": "#f1c40f",
-  "Busier than usual": "#e67e22",
-  "Very busy for this ride": "#e74c3c",
-  "Park closed": "#9aa0a6",
-};
 
 // Tile providers. Check each provider's terms before a public launch;
 // swap in a keyed provider (MapTiler, Mapbox) if traffic grows.
@@ -24,6 +18,10 @@ const STREETS = {
 export default function ParkMap({ rides }) {
   const el = useRef(null);
   const state = useRef({ L: null, map: null, layer: null });
+  // Always holds the newest rides, so a map that finishes loading late
+  // still draws current data instead of the empty first render.
+  const ridesRef = useRef(rides);
+  ridesRef.current = rides;
 
   // Create the map once.
   useEffect(() => {
@@ -59,20 +57,22 @@ export default function ParkMap({ rides }) {
     if (!L || !map) return;
     layer.clearLayers();
     const pts = [];
-    for (const r of rides) {
+    for (const r of ridesRef.current) {
       if (r.lat == null || r.lon == null) continue;
-      const closed = r.busyLabel === "Park closed";
+      const noWait = NO_WAIT.has(r.busyLabel) || r.waitMinutes == null;
       const marker = L.circleMarker([r.lat, r.lon], {
-        radius: closed ? 5 : 7 + Math.min(r.waitMinutes, 90) / 10,
+        radius: noWait ? 5 : 7 + Math.min(r.waitMinutes, 90) / 10,
         color: "#ffffff",
         weight: 1.5,
         fillColor: COLORS[r.busyLabel] || "#999",
-        fillOpacity: closed ? 0.6 : 0.9,
+        fillOpacity: noWait ? 0.75 : 0.9,
       });
+      const typical =
+        r.typicalLow != null ? ` (usual ${r.typicalLow}-${r.typicalHigh})` : "";
       marker.bindTooltip(
-        closed
-          ? `${r.name}<br>Park closed`
-          : `<b>${r.name}</b><br>${r.land}<br>${r.waitMinutes} min (typical ${r.typicalP50}-${r.typicalP90})<br>${r.busyLabel}`
+        noWait
+          ? `<b>${r.name}</b><br>${r.land}<br>${r.busyLabel}`
+          : `<b>${r.name}</b><br>${r.land}<br>${r.waitMinutes} min${typical}<br>${r.busyLabel}`
       );
       marker.addTo(layer);
       pts.push([r.lat, r.lon]);

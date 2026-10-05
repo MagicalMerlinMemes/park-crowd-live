@@ -1,4 +1,11 @@
-import baseline from "../../data/baseline.json";
+import rides from "../../data/rides.json";
+import {
+  nowBucket,
+  loadStats,
+  pickStats,
+  percentileRank,
+  label,
+} from "../../lib/baseline";
 
 const BASE = "https://api.themeparks.wiki/v1";
 const DESTINATION_NAME = "Disneyland Resort";
@@ -10,37 +17,6 @@ async function getJSON(path) {
   return res.json();
 }
 
-// Where does `wait` sit relative to this ride's own typical range?
-// Piecewise-linear interpolation across (min, p50, p90, max) -> (0, 50, 90, 100).
-// This is the "busy" fix: the same 20-minute wait scores differently
-// on a ride whose normal p90 is 15 minutes vs one whose normal p90 is 60.
-function relativePercentile(wait, b) {
-  const pts = [
-    [b.baselineMin, 0],
-    [b.baselineP50, 50],
-    [b.baselineP90, 90],
-    [b.baselineMax, 100],
-  ];
-  if (wait <= pts[0][0]) return 0;
-  if (wait >= pts[3][0]) return 100;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const [w0, p0] = pts[i];
-    const [w1, p1] = pts[i + 1];
-    if (wait >= w0 && wait <= w1) {
-      if (w1 === w0) return p0;
-      return p0 + ((wait - w0) / (w1 - w0)) * (p1 - p0);
-    }
-  }
-  return 50;
-}
-
-function label(pct) {
-  if (pct < 25) return "Quieter than usual";
-  if (pct < 60) return "Normal";
-  if (pct < 85) return "Busier than usual";
-  return "Very busy for this ride";
-}
-
 // Today's opening/closing window for one park, in the park's own timezone.
 // Combines every OPERATING or EXTRA_HOURS entry for today: earliest open,
 // latest close, so early entry / extra magic hours don't get clipped.
@@ -48,7 +24,6 @@ async function getTodayWindow(parkId) {
   const schedule = await getJSON(`/entity/${parkId}/schedule`);
   const tz = schedule.timezone;
   const todayLocal = new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
-  // en-CA formats as YYYY-MM-DD, matching the API's `date` field
 
   const todays = (schedule.schedule || []).filter(
     (e) => e.date === todayLocal && (e.type === "OPERATING" || e.type === "EXTRA_HOURS")
@@ -74,6 +49,22 @@ async function getTodayWindow(parkId) {
   return { isOpen, opensAt: opensAt.toISOString(), closesAt: closesAt.toISOString() };
 }
 
+// Every ride gets a state. Nothing is dropped.
+function describeRide(entity, picked) {
+  const status = entity.status || "UNKNOWN";
+  const wait = entity.queue?.STANDBY?.waitTime ?? null;
+
+  if (status === "DOWN") return { wait: null, pct: null, busyLabel: "Down" };
+  if (status === "CLOSED") return { wait: null, pct: null, busyLabel: "Closed" };
+  if (status === "REFURBISHMENT")
+    return { wait: null, pct: null, busyLabel: "Refurbishment" };
+  if (wait == null) return { wait: null, pct: null, busyLabel: "No posted wait" };
+  if (!picked) return { wait, pct: null, busyLabel: "Not enough history" };
+
+  const pct = percentileRank(wait, picked.s);
+  return { wait, pct: Math.round(pct), busyLabel: label(pct) };
+}
+
 export default async function handler(req, res) {
   try {
     const { destinations } = await getJSON("/destinations");
@@ -82,9 +73,12 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: "Destination not found" });
     }
 
-    const [liveByPark, windows] = await Promise.all([
+    const { hour, dayType } = nowBucket();
+
+    const [liveByPark, windows, stats] = await Promise.all([
       Promise.all(dlr.parks.map((p) => getJSON(`/entity/${p.id}/live`))),
       Promise.all(dlr.parks.map((p) => getTodayWindow(p.id))),
+      loadStats(dayType, hour),
     ]);
 
     const parksStatus = dlr.parks.map((p, i) => ({
@@ -96,60 +90,63 @@ export default async function handler(req, res) {
     const isParkOpen = {};
     parksStatus.forEach((p) => (isParkOpen[p.parkName] = p.isOpen));
 
-    const rides = [];
+    const out = [];
+    const seen = new Set();
     for (const parkLive of liveByPark) {
       for (const entity of parkLive.liveData || []) {
-        const b = baseline[entity.id];
-        if (!b) continue; // no baseline yet - run build-baseline
+        const meta = rides[entity.id];
+        if (!meta) continue; // not an attraction, or added after the last build-rides
+        seen.add(entity.id);
 
-        const parkOpen = isParkOpen[b.park] ?? true;
+        const picked = pickStats(stats.byRide.get(entity.id), dayType, hour);
+        const base = {
+          id: entity.id,
+          name: meta.name,
+          land: meta.land,
+          park: meta.park,
+          lat: meta.lat,
+          lon: meta.lon,
+          typicalLow: picked ? Math.round(picked.s.q25) : null,
+          typicalHigh: picked ? Math.round(picked.s.q75) : null,
+          baselineLevel: picked ? picked.level : null,
+          baselineN: picked ? picked.s.n : null,
+        };
 
-        if (!parkOpen) {
-          // Past close + buffer: flatline instead of showing whatever the
-          // live feed last reported, since that's stale, not current.
-          rides.push({
-            id: entity.id,
-            name: b.name,
-            land: b.land,
-            park: b.park,
-            lat: b.lat,
-            lon: b.lon,
+        if (!(isParkOpen[meta.park] ?? true)) {
+          // Past close + buffer: flatline instead of showing stale live data.
+          out.push({
+            ...base,
             status: "CLOSED",
             waitMinutes: 0,
-            typicalP50: b.baselineP50,
-            typicalP90: b.baselineP90,
             relativePercentile: 0,
             busyLabel: "Park closed",
           });
           continue;
         }
 
-        const wait = entity.queue?.STANDBY?.waitTime;
-        if (wait == null) continue;
-
-        const pct = relativePercentile(wait, b);
-        rides.push({
-          id: entity.id,
-          name: b.name,
-          land: b.land,
-          park: b.park,
-          lat: b.lat,
-          lon: b.lon,
-          status: entity.status,
-          waitMinutes: wait,
-          typicalP50: b.baselineP50,
-          typicalP90: b.baselineP90,
-          relativePercentile: Math.round(pct),
-          busyLabel: label(pct),
+        const d = describeRide(entity, picked);
+        out.push({
+          ...base,
+          status: entity.status || "UNKNOWN",
+          waitMinutes: d.wait,
+          relativePercentile: d.pct ?? -1,
+          busyLabel: d.busyLabel,
         });
       }
     }
 
+    const missingFromFeed = Object.entries(rides)
+      .filter(([id]) => !seen.has(id))
+      .map(([, m]) => m.name);
+
     res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=60");
     res.status(200).json({
       updatedAt: new Date().toISOString(),
+      bucket: { dayType, hour },
+      statsError: stats.error || null,
       parksStatus,
-      rides,
+      rides: out,
+      missingFromFeed,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
