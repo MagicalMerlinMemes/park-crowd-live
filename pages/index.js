@@ -134,8 +134,8 @@ export default function Home() {
 
       <p style={{ fontSize: 12, color: "#777", marginTop: 16 }}>
         Usual range is the middle half of posted waits (25th to 75th percentile) for
-        that ride at this hour and day type, from our own readings since July 24, 2024.
-        Each ride is judged against its own history, so a 20-minute wait can be busy for
+        that ride at this hour and day type, from readings our collector has saved every
+        five minutes since March 25, 2026. Each ride is judged against its own history, so a 20-minute wait can be busy for
         one ride and quiet for another.
       </p>
     </div>
