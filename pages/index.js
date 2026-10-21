@@ -1,11 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import dynamic from "next/dynamic";
 
 import { COLORS, NO_WAIT } from "../components/colors";
+import useLiveData from "../lib/useLiveData";
 
 const ParkMap = dynamic(() => import("../components/ParkMap"), { ssr: false });
-
-const POLL_MS = 3 * 60 * 1000; // 3 minutes - no reason to poll faster than the API refreshes
 
 
 function formatTime(iso) {
@@ -14,27 +13,8 @@ function formatTime(iso) {
 }
 
 export default function Home() {
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
+  const { data, error } = useLiveData();
   const [park, setPark] = useState("All parks");
-
-  async function load() {
-    try {
-      const res = await fetch("/api/live");
-      if (!res.ok) throw new Error(`API returned ${res.status}`);
-      const json = await res.json();
-      setData(json);
-      setError(null);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    const id = setInterval(load, POLL_MS);
-    return () => clearInterval(id);
-  }, []);
 
   const rides = (data?.rides || []).filter(
     (r) => park === "All parks" || r.park === park
