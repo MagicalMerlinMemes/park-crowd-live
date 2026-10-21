@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "build-rides": "node scripts/build-rides.mjs"
+    "build-rides": "node scripts/build-rides.mjs",
+    "build-icons": "node scripts/build-icons.mjs"
   },
   "dependencies": {
     "leaflet": "1.9.4",
