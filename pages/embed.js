@@ -13,7 +13,6 @@ export default function Embed() {
   return (
     <>
       <Head>
-        <title>Park Crowd Live</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
       <style jsx global>{`
